@@ -50,9 +50,13 @@ intents = discord.Intents.default()
 intents.message_content = True  # Bật quyền đọc nội dung tin nhắn
 bot = discord.Client(intents=intents)
 
-# Cấu hình Gemini API
+# =======================================================
+# CẤU HÌNH GEMINI API (ĐÃ SỬA LỖI CLIENT)
+# =======================================================
+# Sửa lỗi: AttributeError: module 'google.generativeai' has no attribute 'Client'
+# Khởi tạo Client và Model Name riêng biệt
 client = genai.Client(api_key=GENAI_API_KEY)
-model = client.models.get("gemini-2.5-flash") 
+model_name = "gemini-2.5-flash" 
 
 # =======================================================
 # HÀM XỬ LÝ ẢNH VÀ TRÍCH XUẤT TEXT
@@ -60,6 +64,7 @@ model = client.models.get("gemini-2.5-flash")
 def extract_text_from_image(image: Image.Image):
     """Trích xuất văn bản từ hình ảnh bằng Tesseract OCR."""
     try:
+        # Cần đảm bảo Tesseract đã được cài đặt đúng (đã làm trong Dockerfile)
         text = image_to_string(image, lang='vie+eng')
         return text.strip()
     except Exception as e:
@@ -67,7 +72,7 @@ def extract_text_from_image(image: Image.Image):
         return None
 
 # =======================================================
-# HÀM GỌI API GEMINI
+# HÀM GỌI API GEMINI (ĐÃ SỬA LỖI TRUYỀN THAM SỐ MODEL)
 # =======================================================
 async def generate_response(prompt_text, images=None):
     """Gửi yêu cầu tới Gemini API."""
@@ -92,13 +97,14 @@ async def generate_response(prompt_text, images=None):
     contents.append(prompt_text)
 
     try:
+        # Đã sửa lỗi: Dùng model_name (string) thay vì object 'model' đã lỗi
         response = client.models.generate_content(
-            model=model,
+            model=model_name,
             contents=contents,
             config=config
         )
         return response.text
-    except GoogleAPICallError as e: # Đã fix APIError
+    except GoogleAPICallError as e: 
         return f"🚨 Lỗi API Gemini: Đã xảy ra lỗi khi gọi AI. Lỗi: {e}"
     except Exception as e:
         return f"🚨 Lỗi không xác định: {e}"
