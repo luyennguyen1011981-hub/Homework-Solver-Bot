@@ -19,8 +19,13 @@ RUN apt-get update && \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
-
 # Copy and install python dependencies
 COPY requirements.txt .
-# ... các dòng còn lại
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy bot code
+COPY bot.py .
+
+# Command to run the bot
+CMD ["python", "bot.py"]
 
