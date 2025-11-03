@@ -51,12 +51,15 @@ intents.message_content = True  # Bật quyền đọc nội dung tin nhắn
 bot = discord.Client(intents=intents)
 
 # =======================================================
-# CẤU HÌNH GEMINI API (ĐÃ SỬA LỖI CLIENT)
+# CẤU HÌNH GEMINI API (ĐÃ SỬA LỖI CLIENT DỨT ĐIỂM)
 # =======================================================
-# Sửa lỗi: AttributeError: module 'google.generativeai' has no attribute 'Client'
-# Khởi tạo Client và Model Name riêng biệt
-client = genai.Client(api_key=GENAI_API_KEY)
+# 1. Cấu hình API Key
+genai.configure(api_key=GENAI_API_KEY)
 model_name = "gemini-2.5-flash" 
+
+# 2. Khởi tạo đối tượng GenerativeModel
+model = genai.GenerativeModel(model_name=model_name)
+
 
 # =======================================================
 # HÀM XỬ LÝ ẢNH VÀ TRÍCH XUẤT TEXT
@@ -97,9 +100,8 @@ async def generate_response(prompt_text, images=None):
     contents.append(prompt_text)
 
     try:
-        # Đã sửa lỗi: Dùng model_name (string) thay vì object 'model' đã lỗi
-        response = client.models.generate_content(
-            model=model_name,
+        # Đã sửa lỗi: Dùng đối tượng model đã khởi tạo trước đó.
+        response = model.generate_content(
             contents=contents,
             config=config
         )
