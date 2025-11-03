@@ -19,8 +19,8 @@ RUN apt-get update && \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
-BREAK_THIS_BUILD <--- THÊM DÒNG NÀY (Sau đó xóa đi)
 
 # Copy and install python dependencies
 COPY requirements.txt .
 # ... các dòng còn lại
+
