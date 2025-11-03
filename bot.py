@@ -1,200 +1,187 @@
+import os
 import discord
-from discord.ext import commands
-import google.generativeai as genai
-from PIL import Image
-import pytesseract
 import io
-import textwrap
-import asyncio
-import os # Dùng để quản lý biến môi trường trên server/local
+import re
+import socket 
+import time   
+from PIL import Image
+import google.generativeai as genai 
+from google.api_core.exceptions import GoogleAPICallError 
+from pytesseract import image_to_string 
 
-# =========================================================================================
-# 🔥 CẤU HÌNH BOT (Sử dụng biến môi trường là tốt nhất cho 24/7)
-# =========================================================================================
+# =======================================================
+# THÊM CƠ CHẾ KIỂM TRA KẾT NỐI MẠNG (FIX LỖI DNS)
+# =======================================================
+def check_dns_and_wait(host="discord.com", port=443, timeout=5):
+    """Kiểm tra kết nối mạng/DNS trước khi bot cố gắng đăng nhập."""
+    max_retries = 10
+    print("--- BẮT ĐẦU KIỂM TRA KẾT NỐI MẠNG (DNS CHECK) ---")
+    for i in range(max_retries):
+        try:
+            # Cố gắng phân giải tên miền và kết nối
+            socket.create_connection((host, port), timeout=timeout)
+            print(f"✅ DNS Check: Kết nối tới {host} thành công!")
+            return True
+        except Exception:
+            print(f"❌ DNS Check: Thất bại ({i+1}/{max_retries}). Đang thử lại...")
+            time.sleep(min(2 ** i, 60)) 
+    
+    print("🚨 LỖI NGHIÊM TRỌNG: Quá số lần thử. Không thể kết nối tới Discord.")
+    return False
 
-# 🔑 API key Gemini: Lấy từ biến môi trường, nếu không có thì dùng placeholder
-GENAI_API_KEY = os.environ.get("GENAI_API_KEY", "AIzaSyD58IRnq78rebxjOnyXMkBzFgrDJbkBPnM")
-genai.configure(api_key=GENAI_API_KEY)
+# Chạy kiểm tra mạng trước khi tiếp tục
+if not check_dns_and_wait():
+    exit(1) 
 
-# 🔥 Token Discord: Lấy từ biến môi trường, nếu không có thì mặc định là chuỗi rỗng
-DISCORD_TOKEN = os.environ.get("DISCORD_TOKEN", "")
+# =======================================================
+# CẤU HÌNH BOT VÀ API
+# =======================================================
 
-# ⚙️ Cấu hình Bot Discord
-intents = discord.Intents.all()
-bot = commands.Bot(command_prefix="!", intents=intents)
+# Lấy Token và Key từ Biến Môi trường (Secrets)
+DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
+GENAI_API_KEY = os.getenv("GENAI_API_KEY")
 
-# 🖼 Đường dẫn Tesseract: Quan trọng cho môi trường 24/7 (Linux)
-# Server sẽ set biến TESSERACT_CMD thành /usr/bin/tesseract
-TESSERACT_PATH = os.environ.get("TESSERACT_CMD", r"C:\Program Files\Tesseract-OCR\tesseract.exe")
-try:
-    pytesseract.pytesseract.tesseract_cmd = TESSERACT_PATH
-except Exception as e:
-    # Bỏ qua lỗi nếu Tesseract không cài đặt cục bộ (khi chạy trên server)
-    print(f"⚠️ Cảnh báo: Không thể thiết lập Tesseract CMD. Lỗi: {e}")
+if not DISCORD_TOKEN or not GENAI_API_KEY:
+    print("🚨 LỖI: Thiếu DISCORD_TOKEN hoặc GENAI_API_KEY. Kiểm tra lại Repository secrets.")
+    exit(1)
 
+# Cấu hình Discord Bot
+intents = discord.Intents.default()
+intents.message_content = True  # Bật quyền đọc nội dung tin nhắn
+bot = discord.Client(intents=intents)
 
-# =========================================================================================
-# 🛠️ CÁC HÀM HỖ TRỢ (Sync & Async)
-# =========================================================================================
+# Cấu hình Gemini API
+client = genai.Client(api_key=GENAI_API_KEY)
+model = client.models.get("gemini-2.5-flash") 
 
-# Hàm gửi message dài >2000 ký tự (Async)
-async def send_long_message(channel, content, reply_to=None):
-    chunks = textwrap.wrap(content, 1900, replace_whitespace=False)
-    for chunk in chunks:
-        if reply_to:
-            await channel.send(chunk, reference=reply_to)
-        else:
-            await channel.send(chunk)
+# =======================================================
+# HÀM XỬ LÝ ẢNH VÀ TRÍCH XUẤT TEXT
+# =======================================================
+def extract_text_from_image(image: Image.Image):
+    """Trích xuất văn bản từ hình ảnh bằng Tesseract OCR."""
+    try:
+        text = image_to_string(image, lang='vie+eng')
+        return text.strip()
+    except Exception as e:
+        print(f"Lỗi khi trích xuất OCR: {e}")
+        return None
 
-# Hàm đồng bộ (sync) để chạy Tesseract OCR (BLOCKING I/O)
-def run_ocr_sync(image):
-    # Đảm bảo Tesseract_cmd được set, nếu không sẽ lỗi
-    return pytesseract.image_to_string(image, lang="vie+eng").strip()
+# =======================================================
+# HÀM GỌI API GEMINI
+# =======================================================
+async def generate_response(prompt_text, images=None):
+    """Gửi yêu cầu tới Gemini API."""
+    contents = []
+    
+    # 1. Thêm System Instruction (Hướng dẫn cho AI)
+    system_instruction = (
+        "Bạn là 'Homework Solver Bot', một trợ lý giải bài tập học đường chuyên nghiệp. "
+        "Ngôn ngữ phản hồi mặc định là Tiếng Việt. "
+        "Hãy luôn giải quyết vấn đề một cách chi tiết, dễ hiểu, từng bước một. "
+        "Nếu người dùng gửi ảnh, hãy trích xuất nội dung câu hỏi từ ảnh và đưa ra lời giải. "
+        "Nội dung câu hỏi: " + prompt_text
+    ) 
+    
+    config = {"system_instruction": system_instruction}
 
-# Hàm đồng bộ (sync) để gọi API Gemini (BLOCKING I/O)
-def generate_content_sync(prompt):
-    model = genai.GenerativeModel("gemini-2.5-flash")
-    return model.generate_content(prompt)
+    # 2. Thêm Hình ảnh (nếu có)
+    if images:
+        contents.extend(images)
+    
+    # 3. Thêm Văn bản
+    contents.append(prompt_text)
 
-# =========================================================================================
-# 🟢 XỬ LÝ SỰ KIỆN (Events)
-# =========================================================================================
+    try:
+        response = client.models.generate_content(
+            model=model,
+            contents=contents,
+            config=config
+        )
+        return response.text
+    except GoogleAPICallError as e: # Đã fix APIError
+        return f"🚨 Lỗi API Gemini: Đã xảy ra lỗi khi gọi AI. Lỗi: {e}"
+    except Exception as e:
+        return f"🚨 Lỗi không xác định: {e}"
 
-# Bot đăng nhập thành công
+# =======================================================
+# XỬ LÝ SỰ KIỆN DISCORD
+# =======================================================
 @bot.event
 async def on_ready():
-    print(f"✅ Bot đã đăng nhập: {bot.user}")
-    print(f"🔥 Bot đang sử dụng Tesseract CMD: {pytesseract.pytesseract.tesseract_cmd}")
+    """Xử lý khi bot đăng nhập thành công."""
+    print(f'✅ Bot đã đăng nhập: {bot.user}')
+    # Thiết lập trạng thái hoạt động của bot
+    activity = discord.Activity(type=discord.ActivityType.listening, name="yêu cầu giải bài | Dùng @bot")
+    await bot.change_presence(activity=activity)
 
-
-# Tự động giải bài khi có ảnh
 @bot.event
 async def on_message(message):
+    """Xử lý mọi tin nhắn đến."""
+    # 1. Bỏ qua tin nhắn của chính bot
     if message.author == bot.user:
         return
 
-    # Xử lý lệnh (commands) trước
-    if message.content.startswith(bot.command_prefix):
-        await bot.process_commands(message) 
-        return
-
-    # Xử lý attachment (ảnh)
-    if message.attachments:
-        for attachment in message.attachments:
-            if any(attachment.filename.lower().endswith(ext) for ext in [".png", ".jpg", ".jpeg"]):
-                
-                # Bắt đầu xử lý
-                await message.channel.send("⏳ Đang xử lý ảnh và gọi AI. Chờ tao xíu...", reference=message)
-
-                try:
-                    img_bytes = await attachment.read()
-                    image = Image.open(io.BytesIO(img_bytes))
-
-                    # 🔍 OCR - CHẠY BẤT ĐỒNG BỘ TRONG LUỒNG RIÊNG (Fix Heartbeat Block)
-                    text = await asyncio.to_thread(run_ocr_sync, image)
-                    
-                    if not text:
-                        await message.reply("⚠️ Không đọc được chữ trong ảnh.")
-                        continue
-
-                    # 🤖 Gọi API Gemini - CHẠY BẤT ĐỒNG BỘ TRONG LUỒNG RIÊNG (Fix Heartbeat Block)
-                    response = await asyncio.to_thread(
-                        generate_content_sync,
-                        f"Giải chi tiết bài tập sau đây bằng tiếng Việt:\n{text}"
-                    )
-
-                    # 💬 Gửi message
-                    await send_long_message(
-                        message.channel, 
-                        f"**📖 Bài trong ảnh (Đã đọc được):**\n```\n{text}```\n\n**🧠 Lời giải:**\n{response.text}", 
-                        reply_to=message
-                    )
-                
-                except Exception as e:
-                    print(f"Lỗi khi xử lý ảnh hoặc gọi API: {e}")
-                    await message.reply("❌ Xảy ra lỗi trong quá trình xử lý hoặc kết nối AI. Mày kiểm tra lại log.")
-
-# =========================================================================================
-# 📚 LỆNH THỦ CÔNG (!giai) - HỖ TRỢ CẢ VĂN BẢN VÀ ẢNH
-# =========================================================================================
-
-@bot.command()
-async def giai(ctx, *question): 
-    
-    # 1. Xử lý câu hỏi văn bản (Ưu tiên)
-    if question:
-        text = " ".join(question).strip()
+    # 2. Kiểm tra có đề cập (@mention) đến bot không
+    if bot.user in message.mentions:
+        # Xóa @mention khỏi nội dung tin nhắn
+        question = re.sub(r'<@!?\d+>', '', message.content).strip()
         
-        if text:
-            await ctx.send("⏳ Đang gọi AI để giải bài tập văn bản. Chờ tao xíu...")
+        # Thiết lập phản hồi ban đầu
+        response_text = "Không tìm thấy câu hỏi hoặc hình ảnh đính kèm rõ ràng. Vui lòng gửi lại câu hỏi của bạn."
+        
+        # Lấy file đính kèm
+        attachments = message.attachments
+        images_to_send = []
+        
+        # Xử lý hình ảnh nếu có
+        if attachments:
+            await message.channel.send("🔍 Bot đã nhận được hình ảnh và đang tiến hành xử lý/giải bài...", delete_after=5)
+            
+            # Tải và chuyển đổi hình ảnh
             try:
-                # Gọi API Gemini - BẤT ĐỒNG BỘ
-                response = await asyncio.to_thread(
-                    generate_content_sync,
-                    f"Giải chi tiết bài tập sau đây bằng tiếng Việt:\n{text}"
-                )
-                
-                await send_long_message(
-                    ctx.channel, 
-                    f"**📖 Bài tập:**\n```\n{text}```\n\n**🧠 Lời giải:**\n{response.text}"
-                )
-                return # Thoát khỏi hàm nếu đã giải bằng text
-                
+                for attachment in attachments:
+                    if attachment.content_type and attachment.content_type.startswith('image'):
+                        image_bytes = await attachment.read()
+                        image = Image.open(io.BytesIO(image_bytes))
+                        images_to_send.append(image)
+                        
+                        # Thử trích xuất văn bản từ ảnh để làm rõ câu hỏi
+                        ocr_text = extract_text_from_image(image)
+                        if ocr_text:
+                            question = f"{question}\n[Văn bản được trích xuất từ ảnh]: {ocr_text}"
+                        
             except Exception as e:
-                print(f"Lỗi khi gọi API Google với văn bản: {e}")
-                await ctx.send("❌ Xảy ra lỗi khi kết nối AI để giải bài văn bản.")
+                response_text = f"🚨 Lỗi xử lý hình ảnh: Không thể đọc hoặc trích xuất văn bản từ hình ảnh. Lỗi: {e}"
+                await message.channel.send(response_text)
                 return
 
-    # 2. Xử lý ảnh (Chỉ chạy nếu không có văn bản và có file đính kèm)
-    if len(ctx.message.attachments) == 0:
-        await ctx.send("📸 Gửi hình bài tập kèm theo lệnh `!giai` hoặc nhập câu hỏi sau `!giai` đi bro 😎")
-        return
-
-    # Gửi tin nhắn thông báo đang xử lý ảnh
-    await ctx.send("⏳ Đang xử lý ảnh và gọi AI. Chờ tao xíu...")
-
-    # Xử lý các file đính kèm
-    for attachment in ctx.message.attachments:
-        try:
-            img_bytes = await attachment.read()
-            image = Image.open(io.BytesIO(img_bytes))
+        # Chỉ xử lý nếu có câu hỏi (dù là từ text hay OCR)
+        if question or images_to_send:
             
-            # OCR - BẤT ĐỒNG BỘ
-            text_from_image = await asyncio.to_thread(run_ocr_sync, image)
+            # Gửi tin nhắn tạm thời báo bot đang xử lý
+            thinking_msg = await message.channel.send(f"🤖 Bot đang suy nghĩ và tìm lời giải cho:\n> {question[:150]}...")
             
-            if not text_from_image:
-                await ctx.send("⚠️ Không đọc được chữ trong ảnh.")
-                continue
+            # Gọi API Gemini
+            try:
+                response_content = await generate_response(question, images=images_to_send)
+                response_text = response_content
+            except Exception as e:
+                response_text = f"🚨 Lỗi gọi Gemini API: {e}"
 
-            # Gọi API Gemini - BẤT ĐỒNG BỘ
-            response = await asyncio.to_thread(
-                generate_content_sync,
-                f"Giải chi tiết bài tập sau đây bằng tiếng Việt:\n{text_from_image}"
-            )
-
-            await send_long_message(
-                ctx.channel, 
-                f"**📖 Bài trong ảnh (Đã đọc được):**\n```\n{text_from_image}```\n\n**🧠 Lời giải:**\n{response.text}"
-            )
+            # Xóa tin nhắn "đang suy nghĩ"
+            await thinking_msg.delete()
             
-        except Exception as e:
-            print(f"Lỗi khi xử lý ảnh hoặc gọi API: {e}")
-            await ctx.send("❌ Xảy ra lỗi trong quá trình xử lý hoặc kết nối AI.")
+            # Cắt nội dung trả lời nếu quá dài (Discord giới hạn 2000 ký tự)
+            if len(response_text) > 2000:
+                response_text = response_text[:1990] + "..."
+            
+            # Gửi phản hồi
+            await message.channel.send(f"**📖 Lời giải từ Homework Solver Bot:**\n{response_text}", reference=message)
 
-# =========================================================================================
-# 🔥 CHẠY BOT
-# =========================================================================================
-
-if __name__ == "__main__":
-    # KIỂM TRA ĐỘ SẠCH SẼ (Chỉ cần kiểm tra xem có token không)
-    if not DISCORD_TOKEN:
-        print("\n\n🚨 LỖI: CHƯA CUNG CẤP DISCORD TOKEN THẬT!")
-        print("Vui lòng thiết lập biến môi trường DISCORD_TOKEN và GENAI_API_KEY trên Railway.\n")
-        exit() 
-    
-    try:
-        bot.run(DISCORD_TOKEN)
-    except Exception as e:
-        print(f"\n\n🚨 LỖI NGHIÊM TRỌNG KHI KHỞI ĐỘNG BOT: {e}")
-        print("Kiểm tra lại DISCORD_TOKEN và INTENTS (Đã bật hết chưa?).")
-
+# Khởi động bot
+try:
+    bot.run(DISCORD_TOKEN)
+except discord.errors.LoginFailure:
+    print("🚨 LỖI ĐĂNG NHẬP: Token Discord không hợp lệ. Vui lòng kiểm tra lại DISCORD_TOKEN.")
+except Exception as e:
+    print(f"🚨 LỖI KHÔNG XÁC ĐỊNH: {e}")
