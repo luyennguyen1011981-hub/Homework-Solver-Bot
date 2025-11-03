@@ -38,6 +38,7 @@ if not check_dns_and_wait():
 # =======================================================
 
 # Lấy Token và Key từ Biến Môi trường (Secrets)
+# CHÚ Ý: Đổi GENAI_API_KEY thành GOOGLE_API_KEY nếu mày đặt tên biến khác trên Render
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 GENAI_API_KEY = os.getenv("GENAI_API_KEY")
 
@@ -51,7 +52,7 @@ intents.message_content = True  # Bật quyền đọc nội dung tin nhắn
 bot = discord.Client(intents=intents)
 
 # =======================================================
-# CẤU HÌNH GEMINI API (ĐÃ SỬA LỖI CLIENT DỨT ĐIỂM)
+# CẤU HÌNH GEMINI API (FIX DỨT ĐIỂM LỖI CLIENT)
 # =======================================================
 # 1. Cấu hình API Key
 genai.configure(api_key=GENAI_API_KEY)
@@ -68,6 +69,7 @@ def extract_text_from_image(image: Image.Image):
     """Trích xuất văn bản từ hình ảnh bằng Tesseract OCR."""
     try:
         # Cần đảm bảo Tesseract đã được cài đặt đúng (đã làm trong Dockerfile)
+        # Sử dụng lang='vie+eng' để nhận diện cả tiếng Việt và tiếng Anh
         text = image_to_string(image, lang='vie+eng')
         return text.strip()
     except Exception as e:
@@ -75,7 +77,7 @@ def extract_text_from_image(image: Image.Image):
         return None
 
 # =======================================================
-# HÀM GỌI API GEMINI (ĐÃ SỬA LỖI TRUYỀN THAM SỐ MODEL)
+# HÀM GỌI API GEMINI (DÙNG ĐỐI TƯỢNG model ĐÃ KHỞI TẠO)
 # =======================================================
 async def generate_response(prompt_text, images=None):
     """Gửi yêu cầu tới Gemini API."""
@@ -100,7 +102,7 @@ async def generate_response(prompt_text, images=None):
     contents.append(prompt_text)
 
     try:
-        # Đã sửa lỗi: Dùng đối tượng model đã khởi tạo trước đó.
+        # Dùng đối tượng model đã khởi tạo trước đó.
         response = model.generate_content(
             contents=contents,
             config=config
