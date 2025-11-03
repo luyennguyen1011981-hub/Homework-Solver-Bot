@@ -1,4 +1,4 @@
 discord.py==2.3.2
-google-generativeai
+google-generativeai==0.6.10  <-- CHẮC CHẮN PHẢI LÀ PHIÊN BẢN NÀY
 Pillow
 pytesseract
